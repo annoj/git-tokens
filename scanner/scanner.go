@@ -2,8 +2,10 @@ package scanner
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"regexp"
+	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -294,23 +296,40 @@ func (s Scanner) scanNewCommits(repo *git.Repository, URL string) error {
 	})
 }
 
-func (s Scanner) ScanRepo(URL string) error {
+type scanRepoResult struct {
+	err error
+	url string
+}
+
+func (s Scanner) ScanRepo(
+	URL string,
+	wg *sync.WaitGroup,
+	resChan chan scanRepoResult,
+) {
 	dir, err := os.MkdirTemp(s.workingDirectory, s.repoPattern)
 	if err != nil {
-		return err
+		resChan <- scanRepoResult{url: URL, err: err}
+		wg.Done()
+		return
 	}
-	defer func() error {
-		return os.RemoveAll(dir)
-	}()
+	defer os.RemoveAll(dir)
 
 	repo, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL: URL,
 	})
 	if err != nil {
-		return err
+		resChan <- scanRepoResult{url: URL, err: err}
+		wg.Done()
+		return
 	}
 
-	return s.scanNewCommits(repo, URL)
+	err = s.scanNewCommits(repo, URL)
+	resChan <- scanRepoResult{url: URL, err: err}
+
+	// For some reason the first defer statement to remove the
+	// temp dir is never executed
+	os.RemoveAll(dir)
+	wg.Done()
 }
 
 func (s Scanner) ScanAll() error {
@@ -319,10 +338,22 @@ func (s Scanner) ScanAll() error {
 		return err
 	}
 
+	resChan := make(chan scanRepoResult)
+	var wg sync.WaitGroup
+
 	for _, repo := range repos {
-		err = s.ScanRepo(repo.URL)
-		if err != nil {
-			return err
+		wg.Add(1)
+		go s.ScanRepo(repo.URL, &wg, resChan)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resChan)
+	}()
+
+	for result := range resChan {
+		if result.err != nil {
+			fmt.Println(result.url, result.err)
 		}
 	}
 
