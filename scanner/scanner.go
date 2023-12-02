@@ -2,7 +2,7 @@ package scanner
 
 import (
 	"database/sql"
-	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"sync"
@@ -304,11 +304,10 @@ type scanRepoResult struct {
 func (s Scanner) ScanRepo(
 	URL string,
 	wg *sync.WaitGroup,
-	resChan chan scanRepoResult,
 ) {
 	dir, err := os.MkdirTemp(s.workingDirectory, s.repoPattern)
 	if err != nil {
-		resChan <- scanRepoResult{url: URL, err: err}
+		log.Println(URL, err)
 		wg.Done()
 		return
 	}
@@ -318,13 +317,16 @@ func (s Scanner) ScanRepo(
 		URL: URL,
 	})
 	if err != nil {
-		resChan <- scanRepoResult{url: URL, err: err}
+		log.Println(URL, err)
 		wg.Done()
 		return
 	}
 
-	err = s.scanNewCommits(repo, URL)
-	resChan <- scanRepoResult{url: URL, err: err}
+	if err := s.scanNewCommits(repo, URL); err != nil {
+		log.Println(URL, err)
+		wg.Done()
+		return
+	}
 
 	// For some reason the first defer statement to remove the
 	// temp dir is never executed
@@ -332,30 +334,18 @@ func (s Scanner) ScanRepo(
 	wg.Done()
 }
 
-func (s Scanner) ScanAll() error {
+func (s Scanner) ScanAll() {
 	repos, err := s.GetRepos()
 	if err != nil {
-		return err
+		log.Println(err)
 	}
 
-	resChan := make(chan scanRepoResult)
 	var wg sync.WaitGroup
 
 	for _, repo := range repos {
 		wg.Add(1)
-		go s.ScanRepo(repo.URL, &wg, resChan)
+		go s.ScanRepo(repo.URL, &wg)
 	}
 
-	go func() {
-		wg.Wait()
-		close(resChan)
-	}()
-
-	for result := range resChan {
-		if result.err != nil {
-			fmt.Println(result.url, result.err)
-		}
-	}
-
-	return nil
+	wg.Wait()
 }
