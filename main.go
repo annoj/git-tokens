@@ -16,8 +16,8 @@ func main() {
 	addSecretTypeName := addSecretTypeCommand.String("name", "", "Name of the secret type")
 	addSecretTypeRegex := addSecretTypeCommand.String("regex", "", "Regex to find the secret")
 
-	// scanRepoCommand := flag.NewFlagSet("scan-repo", flag.ExitOnError)
-	// scanRepoUrl := scanRepoCommand.String("url", "", "URL of the repo to scan")
+	scanRepoCommand := flag.NewFlagSet("scan-repo", flag.ExitOnError)
+	scanRepoUrl := scanRepoCommand.String("url", "", "URL of the repo to scan")
 
 	scanAllCommand := flag.NewFlagSet("scan-all", flag.ExitOnError)
 
@@ -47,13 +47,13 @@ func main() {
 		if err != nil {
 			fmt.Printf("Could not add secret type: %s\n", err)
 		}
-	// case "scan-repo":
-	// 	scanRepoCommand.Parse(os.Args[2:])
-	// 	fmt.Printf("Scanning repo, URL: %s\n", *scanRepoUrl)
-	// 	err = scanner.ScanRepo(*scanRepoUrl)
-	// 	if err != nil {
-	// 		fmt.Printf("Could not scan repo %s,: %s", *scanRepoUrl, err)
-	// 	}
+	case "scan-repo":
+		scanRepoCommand.Parse(os.Args[2:])
+		fmt.Printf("Scanning repo, URL: %s\n", *scanRepoUrl)
+		err = scanner.ScanSingleRepo(*scanRepoUrl)
+		if err != nil {
+			fmt.Printf("Could not scan repo %s,: %s", *scanRepoUrl, err)
+		}
 	case "scan-all":
 		scanAllCommand.Parse(os.Args[2:])
 		fmt.Println("Scanning all repos")

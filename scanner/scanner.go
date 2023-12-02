@@ -159,6 +159,29 @@ type Repository struct {
 	URL string
 }
 
+func (s Scanner) GetRepo(URL string) (Repository, error) {
+	rows, err := s.db.Query(
+		`
+			SELECT url
+			FROM repositories
+			WHERE url == ?
+		`,
+		URL,
+	)
+	if err != nil {
+		return Repository{}, err
+	}
+
+	repository := Repository{}
+	rows.Next()
+	err = rows.Scan(&repository.URL)
+	if err != nil {
+		return Repository{}, err
+	}
+
+	return repository, nil
+}
+
 func (s Scanner) GetRepos() ([]Repository, error) {
 	rows, err := s.db.Query(
 		`
@@ -332,6 +355,21 @@ func (s Scanner) ScanRepo(
 	// temp dir is never executed
 	os.RemoveAll(dir)
 	wg.Done()
+}
+
+func (s Scanner) ScanSingleRepo(URL string) error {
+	repo, err := s.GetRepo(URL)
+	if err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go s.ScanRepo(repo.URL, &wg)
+	wg.Wait()
+
+	return nil
 }
 
 func (s Scanner) ScanAll() {
