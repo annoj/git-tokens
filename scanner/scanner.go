@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -49,6 +50,7 @@ func (s Scanner) createTablesIfNotExist() error {
 	_, err = s.db.Exec(
 		`
 			CREATE TABLE IF NOT EXISTS findings (
+				last_scanned_ts TIMESTAMP NOT NULL,
 				file_name TEXT NOT NULL,
 				line_number INT NOT NULL,
 				content TEXT NOT NULL,
@@ -226,6 +228,7 @@ func (s Scanner) AddFinding(
 	_, err := s.db.Exec(
 		`
 			INSERT OR IGNORE INTO findings (
+				last_scanned_ts,
 				repository,
 				secret_type,
 				tree_name,
@@ -233,8 +236,9 @@ func (s Scanner) AddFinding(
 				line_number,
 				content
 			)
-			VALUES (?, ?, ?, ?, ?, ?)
+			VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
 		`,
+
 		URL,
 		SecretTypeName,
 		TreeName,
@@ -247,18 +251,26 @@ func (s Scanner) AddFinding(
 }
 
 type Finding struct {
-	FileName   string
-	LineNumber int
-	Content    string
-	TreeName   string
-	Repository string
-	SecretType string
+	LastScannedTimestamp time.Time
+	FileName             string
+	LineNumber           int
+	Content              string
+	TreeName             string
+	Repository           string
+	SecretType           string
 }
 
 func (s Scanner) GetFindings() ([]Finding, error) {
 	rows, err := s.db.Query(
 		`
-			SELECT file_name, line_number, content, tree_name, repository, secret_type
+			SELECT
+				last_scanned_ts,
+				file_name,
+				line_number,
+				content,
+				tree_name,
+				repository,
+				secret_type
 			FROM findings
 		`,
 	)
@@ -273,6 +285,7 @@ func (s Scanner) GetFindings() ([]Finding, error) {
 	for rows.Next() {
 		finding := Finding{}
 		err := rows.Scan(
+			&finding.LastScannedTimestamp,
 			&finding.FileName,
 			&finding.LineNumber,
 			&finding.Content,

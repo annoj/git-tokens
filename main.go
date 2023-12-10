@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"git-tokens/scanner"
 
@@ -331,7 +332,8 @@ func (c findingListCommand) Run(rawArgs []string) int {
 
 	for _, finding := range findings {
 		fmt.Printf(
-			"%s\t%d\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			finding.LastScannedTimestamp.Format(time.RFC822Z),
 			finding.FileName,
 			finding.LineNumber,
 			finding.Content,
