@@ -1,67 +1,421 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"git-tokens/scanner"
+	"log"
 	"os"
+
+	"git-tokens/scanner"
+
+	"github.com/mitchellh/cli"
 )
 
-func main() {
+const (
+	exitSuccess = iota
+	exitMissingSubcommamd
+	exitNewScannerError
+	exitRepoAddError
+	exitRepoListError
+	exitSecretTypeAddError
+	exitSecretTypeListError
+	exitScanAllError
+	exitScanRepoError
+	exitFindingListError
+)
 
-	addRepoCommand := flag.NewFlagSet("add-repo", flag.ExitOnError)
-	addRepoUrl := addRepoCommand.String("url", "", "Repository URL")
+type repoCommand struct{}
 
-	addSecretTypeCommand := flag.NewFlagSet("add-secret-type", flag.ExitOnError)
-	addSecretTypeName := addSecretTypeCommand.String("name", "", "Name of the secret type")
-	addSecretTypeRegex := addSecretTypeCommand.String("regex", "", "Regex to find the secret")
+func (c repoCommand) Run(rawArgs []string) int {
+	fmt.Printf(
+		"Missing subcommand\n%s\n",
+		c.Help(),
+	)
 
-	scanRepoCommand := flag.NewFlagSet("scan-repo", flag.ExitOnError)
-	scanRepoUrl := scanRepoCommand.String("url", "", "URL of the repo to scan")
+	return exitMissingSubcommamd
+}
 
-	scanAllCommand := flag.NewFlagSet("scan-all", flag.ExitOnError)
+func (c repoCommand) Help() string {
+	return "Usage: git-tokens repo [add | list]"
+}
 
-	if len(os.Args) <= 1 {
-		fmt.Println("No command given, exiting.")
-		os.Exit(1)
+func (c repoCommand) Synopsis() string {
+	return "Manage repositories"
+}
+
+type repoAddCommand struct{}
+
+func (c repoAddCommand) Run(rawArgs []string) int {
+	if len(rawArgs) != 1 {
+		fmt.Printf(
+			"Wrong number of arguments\n%s\n",
+			c.Help(),
+		)
+		return exitRepoAddError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
-		fmt.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(1)
+		log.Printf("Could not create new scanner, %s\n", err)
+		os.Exit(exitNewScannerError)
 	}
 
-	switch os.Args[1] {
-	case "add-repo":
-		addRepoCommand.Parse(os.Args[2:])
-		fmt.Printf("Adding repo, URL: %s\n", *addRepoUrl)
-		err = scanner.AddRepo(*addRepoUrl)
-		if err != nil {
-			fmt.Printf("Could not add new repo: %s\n", err)
-		}
-	case "add-secret-type":
-		addSecretTypeCommand.Parse(os.Args[2:])
-		fmt.Printf("Adding secret type, name: %s, regex: %s\n", *addSecretTypeName, *addSecretTypeRegex)
-		err = scanner.AddSecretType(*addSecretTypeName, *addSecretTypeRegex)
-		if err != nil {
-			fmt.Printf("Could not add secret type: %s\n", err)
-		}
-	case "scan-repo":
-		scanRepoCommand.Parse(os.Args[2:])
-		fmt.Printf("Scanning repo, URL: %s\n", *scanRepoUrl)
-		err = scanner.ScanSingleRepo(*scanRepoUrl)
-		if err != nil {
-			fmt.Printf("Could not scan repo %s,: %s", *scanRepoUrl, err)
-		}
-	case "scan-all":
-		scanAllCommand.Parse(os.Args[2:])
-		fmt.Println("Scanning all repos")
-		// TODO: Error handling
-		scanner.ScanAll()
-	}
-
+	repoUrl := rawArgs[0]
+	log.Printf("Adding repo %s\n", repoUrl)
+	err = scanner.AddRepo(repoUrl)
 	if err != nil {
-		os.Exit(1)
+		log.Printf("Could not add repo: %s\n", err)
+		return exitRepoAddError
 	}
+
+	return exitSuccess
+}
+
+func (c repoAddCommand) Help() string {
+	return "Usage: git-tokens repo add <repo-url>"
+}
+
+func (c repoAddCommand) Synopsis() string {
+	return "Add repository to database"
+}
+
+type repoListCommand struct{}
+
+func (c repoListCommand) Run(rawArgs []string) int {
+	if len(rawArgs) != 0 {
+		fmt.Printf(
+			"Wrong number of arguments\n%s\n",
+			c.Help(),
+		)
+		return exitRepoListError
+	}
+
+	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
+	if err != nil {
+		log.Printf("Could not create new scanner, %s\n", err)
+		os.Exit(exitNewScannerError)
+	}
+
+	repos, err := scanner.GetRepos()
+	if err != nil {
+		log.Printf("Could not get repos, %s\n", err)
+		return exitRepoListError
+	}
+
+	for _, repo := range repos {
+		fmt.Println(repo.URL)
+	}
+
+	return exitSuccess
+}
+
+func (c repoListCommand) Help() string {
+	return "Usage: git-tokens repo list"
+}
+
+func (c repoListCommand) Synopsis() string {
+	return "List all repos in database"
+}
+
+type secretTypeCommand struct{}
+
+func (c secretTypeCommand) Run(rawArgs []string) int {
+	fmt.Printf(
+		"Missing subcommand\n%s\n",
+		c.Help(),
+	)
+
+	return exitMissingSubcommamd
+}
+
+func (c secretTypeCommand) Help() string {
+	return "git-tokens secret-type [add | list]"
+}
+
+func (c secretTypeCommand) Synopsis() string {
+	return "Manage secret types"
+}
+
+type secretTypeAddCommand struct{}
+
+func (c secretTypeAddCommand) Run(rawArgs []string) int {
+	if len(rawArgs) != 2 {
+		log.Printf(
+			"Wrong number of arguments\n%s\n",
+			c.Help(),
+		)
+		return exitSecretTypeAddError
+	}
+
+	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
+	if err != nil {
+		log.Printf("Could not create new scanner, %s\n", err)
+		os.Exit(exitNewScannerError)
+	}
+
+	secretTypeName := rawArgs[0]
+	secretTypeRegex := rawArgs[1]
+	err = scanner.AddSecretType(secretTypeName, secretTypeRegex)
+	if err != nil {
+		log.Printf("Could not add secret type: %s\n", err)
+		return exitSecretTypeAddError
+	}
+
+	return exitSuccess
+}
+
+func (c secretTypeAddCommand) Help() string {
+	return "Usage: git-secrets secret-type add <secret type name> <secret type regex>"
+}
+
+func (c secretTypeAddCommand) Synopsis() string {
+	return "Add secret types to database"
+}
+
+type secretTypeListCommand struct{}
+
+func (c secretTypeListCommand) Run(rawArgs []string) int {
+	if len(rawArgs) != 0 {
+		fmt.Printf(
+			"Wrong number of arguments\n%s\n",
+			c.Help(),
+		)
+		return exitSecretTypeListError
+	}
+
+	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
+	if err != nil {
+		log.Printf("Could not create new scanner, %s\n", err)
+		os.Exit(exitNewScannerError)
+	}
+	
+	secretTypes, err := scanner.GetSecretTypes()
+	if err != nil {
+		log.Printf("Could not get secret types: %s\n", err)
+		return exitSecretTypeListError
+	}
+
+	for _, secretType := range secretTypes {
+		fmt.Printf("%s\t%s\n", secretType.Name, secretType.Regex)
+	}
+
+	return exitSuccess
+}
+
+func (c secretTypeListCommand) Help() string {
+	return "Usage git-tokens secret-type get"
+}
+
+func (c secretTypeListCommand) Synopsis() string {
+	return "List all secret types in databas"
+}
+
+type scanCommand struct{}
+
+func (c scanCommand) Run(rawArgs []string) int {
+	fmt.Printf(
+		"Missing subcommand\n%s\n",
+		c.Help(),
+	)
+
+	return exitMissingSubcommamd
+}
+
+func (c scanCommand) Help() string {
+	return "Usage: git-secrets scan [all | repo]"
+}
+
+func (c scanCommand) Synopsis() string {
+	return "Scan all or a single repo"
+}
+
+type scanAllCommand struct{}
+
+func (c scanAllCommand) Run(rawArgs []string) int {
+	if len(rawArgs) != 0 {
+		log.Printf(
+			"Wrong number of arguments\n%s\n",
+			c.Help(),
+		)
+		return exitScanAllError
+	}
+
+	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
+	if err != nil {
+		log.Printf("Could not create new scanner, %s\n", err)
+		os.Exit(exitNewScannerError)
+	}
+
+	// TODO: Add error handling
+	scanner.ScanAll()
+
+	return exitSuccess
+}
+
+func (c scanAllCommand) Help() string {
+	return "Usage: git-secrets scan all"
+}
+
+func (c scanAllCommand) Synopsis() string {
+	return "Scan all new commits in all repos"
+}
+
+type scanRepoCommand struct{}
+
+func (c scanRepoCommand) Run(rawArgs []string) int {
+	if len(rawArgs) != 1 {
+		fmt.Printf(
+			"Wrong number of arguments\n%s\n",
+			c.Help(),
+		)
+		return exitScanRepoError
+	}
+
+	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
+	if err != nil {
+		log.Printf("Could not create new scanner, %s\n", err)
+		os.Exit(exitNewScannerError)
+	}
+
+	repoUrl := rawArgs[0]
+	err = scanner.ScanSingleRepo(repoUrl)
+	if err != nil {
+		log.Printf("Could not scan repo %s: %s\n", repoUrl, err)
+		return exitScanRepoError
+	}
+
+	return exitSuccess
+}
+
+func (c scanRepoCommand) Help() string {
+	return "Usage: git-tokens scan repo <repo url>"
+}
+
+func (c scanRepoCommand) Synopsis() string {
+	return "Scan single repository"
+}
+
+type findingCommand struct{}
+
+func (c findingCommand) Run(rawArgs []string) int {
+	fmt.Printf(
+		"Missing subcommand\n%s\n",
+		c.Help(),
+	)
+
+	return exitMissingSubcommamd
+}
+
+func (c findingCommand) Help() string {
+	return "Usage: git-tokens finding [list]"
+}
+
+func (c findingCommand) Synopsis() string {
+	return "Manage findings"
+}
+
+type findingListCommand struct{}
+
+func (c findingListCommand) Run(rawArgs []string) int {
+	if len(rawArgs) != 0 {
+		fmt.Printf(
+			"Wrong number of arguments\n%s\n",
+			c.Help(),
+		)
+		return exitFindingListError
+	}
+
+	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
+	if err != nil {
+		log.Printf("Could not create new scanner, %s\n", err)
+		os.Exit(exitNewScannerError)
+	}
+
+	findings, err := scanner.GetFindings()
+	if err != nil {
+		log.Printf("Could not get findings: %s\n", err)
+		return exitFindingListError
+	}
+
+	for _, finding := range findings {
+		fmt.Printf(
+			"%s\t%d\t%s\t%s\t%s\t%s\n",
+			finding.FileName,
+			finding.LineNumber,
+			finding.Content,
+			finding.TreeName,
+			finding.Repository,
+			finding.SecretType,
+		)
+	}
+
+	return exitSuccess
+}
+
+func (c findingListCommand) Help() string {
+	return "Usage: git-tokens finding list"
+}
+
+func (c findingListCommand) Synopsis() string {
+	return "List all findings"
+}
+
+func main() {
+	c := cli.NewCLI("git-token", "1.0.0")
+	c.Args = os.Args[1:]
+	c.Commands = map[string]cli.CommandFactory{
+		"repo": func() (cli.Command, error) {
+			return repoCommand{}, nil
+		},
+
+		"repo add": func() (cli.Command, error) {
+			return repoAddCommand{}, nil
+		},
+
+		// TODO: Add "repo remove"
+
+		"repo list": func() (cli.Command, error) {
+			return repoListCommand{}, nil
+		},
+
+		"secret-type": func() (cli.Command, error) {
+			return secretTypeCommand{}, nil
+		},
+
+		"secret-type add": func() (cli.Command, error) {
+			return secretTypeAddCommand{}, nil
+		},
+
+		// TODO: Add "secret-type remove"
+
+		"secret-type list": func() (cli.Command, error) {
+			return secretTypeListCommand{}, nil
+		},
+
+		"scan": func() (cli.Command, error) {
+			return scanCommand{}, nil
+		},
+
+		"scan all": func() (cli.Command, error) {
+			return scanAllCommand{}, nil
+		},
+
+		"scan repo": func() (cli.Command, error) {
+			return scanRepoCommand{}, nil
+		},
+
+		"finding": func() (cli.Command, error) {
+			return findingCommand{}, nil
+		},
+
+		"finding list": func() (cli.Command, error) {
+			return findingListCommand{}, nil
+		},
+	}
+
+	exitStatus, err := c.Run()
+	if err != nil {
+		log.Println(err)
+	}
+
+	os.Exit(exitStatus)
 }

@@ -126,6 +126,9 @@ func (s Scanner) GetSecretTypes() ([]SecretType, error) {
 			FROM secret_types
 		`,
 	)
+
+	defer rows.Close()
+
 	if err != nil {
 		return []SecretType{}, err
 	}
@@ -168,6 +171,9 @@ func (s Scanner) GetRepo(URL string) (Repository, error) {
 		`,
 		URL,
 	)
+
+	defer rows.Close()
+
 	if err != nil {
 		return Repository{}, err
 	}
@@ -189,6 +195,9 @@ func (s Scanner) GetRepos() ([]Repository, error) {
 			FROM repositories
 		`,
 	)
+
+	defer rows.Close()
+
 	if err != nil {
 		return []Repository{}, err
 	}
@@ -235,6 +244,49 @@ func (s Scanner) AddFinding(
 	)
 
 	return err
+}
+
+type Finding struct {
+	FileName   string
+	LineNumber int
+	Content    string
+	TreeName   string
+	Repository string
+	SecretType string
+}
+
+func (s Scanner) GetFindings() ([]Finding, error) {
+	rows, err := s.db.Query(
+		`
+			SELECT file_name, line_number, content, tree_name, repository, secret_type
+			FROM findings
+		`,
+	)
+
+	defer rows.Close()
+
+	if err != nil {
+		return []Finding{}, err
+	}
+
+	findings := []Finding{}
+	for rows.Next() {
+		finding := Finding{}
+		err := rows.Scan(
+			&finding.FileName,
+			&finding.LineNumber,
+			&finding.Content,
+			&finding.TreeName,
+			&finding.Repository,
+			&finding.SecretType,
+		)
+		if err != nil {
+			return []Finding{}, err
+		}
+		findings = append(findings, finding)
+	}
+
+	return findings, nil
 }
 
 func (s Scanner) scanCommit(
@@ -289,6 +341,7 @@ func (s Scanner) scanNewCommits(repo *git.Repository, URL string) error {
 		URL,
 	)
 	if err != nil {
+		log.Printf("scanNewCommits URL: %s\n", URL)
 		return err
 	}
 	defer handledTreeNames.Close()
@@ -307,6 +360,7 @@ func (s Scanner) scanNewCommits(repo *git.Repository, URL string) error {
 		treeName := ""
 		for handledTreeNames.Next() {
 			if err := handledTreeNames.Scan(&treeName); err != nil {
+				log.Printf("scanNewCommits - handleTreeNames.Scan, treeName: %s\n", treeName)
 				return err
 			}
 
@@ -330,7 +384,7 @@ func (s Scanner) ScanRepo(
 ) {
 	dir, err := os.MkdirTemp(s.workingDirectory, s.repoPattern)
 	if err != nil {
-		log.Println(URL, err)
+		log.Println("ScanRepo - os.MkdirTemp", URL, err)
 		wg.Done()
 		return
 	}
@@ -340,13 +394,13 @@ func (s Scanner) ScanRepo(
 		URL: URL,
 	})
 	if err != nil {
-		log.Println(URL, err)
+		log.Println("ScanRepo - git.PlainClone", URL, err)
 		wg.Done()
 		return
 	}
 
 	if err := s.scanNewCommits(repo, URL); err != nil {
-		log.Println(URL, err)
+		log.Println("ScanRepo - s.scanNewCommits", URL, err)
 		wg.Done()
 		return
 	}
@@ -375,7 +429,7 @@ func (s Scanner) ScanSingleRepo(URL string) error {
 func (s Scanner) ScanAll() {
 	repos, err := s.GetRepos()
 	if err != nil {
-		log.Println(err)
+		log.Println("ScanAll - s.GetRepos", err)
 	}
 
 	var wg sync.WaitGroup
