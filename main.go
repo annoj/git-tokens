@@ -11,6 +11,11 @@ import (
 )
 
 const (
+	scannerType     = "sqlite3"
+	scannerFilename = "git-tokens.slite3"
+)
+
+const (
 	exitSuccess = iota
 	exitMissingSubcommamd
 	exitNewScannerError
@@ -22,6 +27,22 @@ const (
 	exitScanRepoError
 	exitFindingListError
 )
+
+func confirmRawArgsLenOrLogError(
+	args []string,
+	arglen int,
+	help func() string,
+) bool {
+	if len(args) != arglen {
+		log.Printf(
+			"Wrong number of arguments\n%s\n",
+			help(),
+		)
+		return false
+	}
+
+	return true
+}
 
 type repoCommand struct{}
 
@@ -45,18 +66,14 @@ func (c repoCommand) Synopsis() string {
 type repoAddCommand struct{}
 
 func (c repoAddCommand) Run(rawArgs []string) int {
-	if len(rawArgs) != 1 {
-		fmt.Printf(
-			"Wrong number of arguments\n%s\n",
-			c.Help(),
-		)
+	if !confirmRawArgsLenOrLogError(rawArgs, 1, c.Help) {
 		return exitRepoAddError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(exitNewScannerError)
+		return exitNewScannerError
 	}
 
 	repoUrl := rawArgs[0]
@@ -81,18 +98,14 @@ func (c repoAddCommand) Synopsis() string {
 type repoListCommand struct{}
 
 func (c repoListCommand) Run(rawArgs []string) int {
-	if len(rawArgs) != 0 {
-		fmt.Printf(
-			"Wrong number of arguments\n%s\n",
-			c.Help(),
-		)
+	if !confirmRawArgsLenOrLogError(rawArgs, 0, c.Help) {
 		return exitRepoListError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(exitNewScannerError)
+		return exitNewScannerError
 	}
 
 	repos, err := scanner.GetRepos()
@@ -138,18 +151,14 @@ func (c secretTypeCommand) Synopsis() string {
 type secretTypeAddCommand struct{}
 
 func (c secretTypeAddCommand) Run(rawArgs []string) int {
-	if len(rawArgs) != 2 {
-		log.Printf(
-			"Wrong number of arguments\n%s\n",
-			c.Help(),
-		)
+	if !confirmRawArgsLenOrLogError(rawArgs, 2, c.Help) {
 		return exitSecretTypeAddError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(exitNewScannerError)
+		return exitNewScannerError
 	}
 
 	secretTypeName := rawArgs[0]
@@ -174,20 +183,16 @@ func (c secretTypeAddCommand) Synopsis() string {
 type secretTypeListCommand struct{}
 
 func (c secretTypeListCommand) Run(rawArgs []string) int {
-	if len(rawArgs) != 0 {
-		fmt.Printf(
-			"Wrong number of arguments\n%s\n",
-			c.Help(),
-		)
+	if !confirmRawArgsLenOrLogError(rawArgs, 0, c.Help) {
 		return exitSecretTypeListError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(exitNewScannerError)
+		return exitNewScannerError
 	}
-	
+
 	secretTypes, err := scanner.GetSecretTypes()
 	if err != nil {
 		log.Printf("Could not get secret types: %s\n", err)
@@ -231,18 +236,14 @@ func (c scanCommand) Synopsis() string {
 type scanAllCommand struct{}
 
 func (c scanAllCommand) Run(rawArgs []string) int {
-	if len(rawArgs) != 0 {
-		log.Printf(
-			"Wrong number of arguments\n%s\n",
-			c.Help(),
-		)
+	if !confirmRawArgsLenOrLogError(rawArgs, 0, c.Help) {
 		return exitScanAllError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(exitNewScannerError)
+		return exitNewScannerError
 	}
 
 	// TODO: Add error handling
@@ -262,18 +263,14 @@ func (c scanAllCommand) Synopsis() string {
 type scanRepoCommand struct{}
 
 func (c scanRepoCommand) Run(rawArgs []string) int {
-	if len(rawArgs) != 1 {
-		fmt.Printf(
-			"Wrong number of arguments\n%s\n",
-			c.Help(),
-		)
+	if !confirmRawArgsLenOrLogError(rawArgs, 1, c.Help) {
 		return exitScanRepoError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(exitNewScannerError)
+		return exitNewScannerError
 	}
 
 	repoUrl := rawArgs[0]
@@ -316,18 +313,14 @@ func (c findingCommand) Synopsis() string {
 type findingListCommand struct{}
 
 func (c findingListCommand) Run(rawArgs []string) int {
-	if len(rawArgs) != 0 {
-		fmt.Printf(
-			"Wrong number of arguments\n%s\n",
-			c.Help(),
-		)
+	if !confirmRawArgsLenOrLogError(rawArgs, 0, c.Help) {
 		return exitFindingListError
 	}
 
 	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
-		os.Exit(exitNewScannerError)
+		return exitNewScannerError
 	}
 
 	findings, err := scanner.GetFindings()
