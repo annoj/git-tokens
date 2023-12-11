@@ -15,12 +15,20 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
+type scanResult struct {
+	repoUrl    string
+	commitHash string
+	hasFinding bool
+	finding    Finding
+}
+
 type Scanner struct {
 	dbType           string
 	dbPath           string
 	db               *sql.DB
 	workingDirectory string
 	repoPattern      string
+	scanResultChan   chan scanResult
 }
 
 func (s Scanner) createTablesIfNotExist() error {
@@ -40,6 +48,20 @@ func (s Scanner) createTablesIfNotExist() error {
 			CREATE TABLE IF NOT EXISTS secret_types (
 				name TEXT NOT NULL PRIMARY KEY,
 				regex TEXT NOT NULL
+			)
+		`,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(
+		`
+			CREATE TABLE IF NOT EXISTS scanned_commits (
+				repository TEXT NOT NULL,
+				commit_hash TEXT NOT NULL,
+				last_scanned_ts TIMESTAMP NOT NULL,
+				PRIMARY KEY (repository, commit_hash)
 			)
 		`,
 	)
@@ -73,6 +95,7 @@ func NewScanner(DBType string, DBPath string) (Scanner, error) {
 		dbPath:           DBPath,
 		workingDirectory: ".",
 		repoPattern:      "",
+		scanResultChan:   make(chan scanResult),
 	}
 
 	db, err := sql.Open(DBType, DBPath)
@@ -217,6 +240,32 @@ func (s Scanner) GetRepos() ([]Repository, error) {
 	return repositories, nil
 }
 
+func (s Scanner) AddScannedCommit(repoUrl string, hash string) error {
+	_, err := s.db.Exec(
+		`
+			INSERT OR IGNORE INTO scanned_commits (
+				last_scanned_ts,
+				repository,
+				commit_hash
+			)
+			VALUES (CURRENT_TIMESTAMP, ?, ?)
+		`,
+		repoUrl, hash,
+	)
+
+	return err
+}
+
+type Finding struct {
+	LastScannedTimestamp time.Time
+	FileName             string
+	LineNumber           int
+	Content              string
+	TreeName             string
+	Repository           string
+	SecretType           string
+}
+
 func (s Scanner) AddFinding(
 	URL string,
 	SecretTypeName string,
@@ -248,16 +297,6 @@ func (s Scanner) AddFinding(
 	)
 
 	return err
-}
-
-type Finding struct {
-	LastScannedTimestamp time.Time
-	FileName             string
-	LineNumber           int
-	Content              string
-	TreeName             string
-	Repository           string
-	SecretType           string
 }
 
 func (s Scanner) GetFindings() ([]Finding, error) {
@@ -302,167 +341,47 @@ func (s Scanner) GetFindings() ([]Finding, error) {
 	return findings, nil
 }
 
-func (s Scanner) scanCommit(
-	repo *git.Repository,
-	url string,
-	commitHash plumbing.Hash,
-) error {
-	secretTypes, err := s.GetSecretTypes()
-	if err != nil {
-		return err
-	}
+func (s Scanner) storeScanResults() {
+	log.Println("Starting storeScanResults")
 
-	for _, secretType := range secretTypes {
-		re, err := regexp.Compile(secretType.Regex)
+	for result := range s.scanResultChan {
+		err := s.AddScannedCommit(result.repoUrl, result.commitHash)
 		if err != nil {
-			return err
+			log.Printf(
+				"Could not add scanned commit %s %s: %s\n",
+				result.repoUrl, result.commitHash, err,
+			)
 		}
 
-		grepResults, err := repo.Grep(&git.GrepOptions{
-			Patterns:   []*regexp.Regexp{re},
-			CommitHash: commitHash,
-		})
-		if err != nil {
-			return err
-		}
-
-		for _, grepResult := range grepResults {
-			err = s.AddFinding(
-				url,
-				secretType.Name,
-				grepResult.TreeName,
-				grepResult.FileName,
-				grepResult.LineNumber,
-				grepResult.Content,
+		if result.hasFinding {
+			err := s.AddFinding(
+				result.finding.Repository,
+				result.finding.SecretType,
+				result.finding.TreeName,
+				result.finding.FileName,
+				result.finding.LineNumber,
+				result.finding.Content,
 			)
 			if err != nil {
-				return err
+				log.Printf("Could not add finding: %s\n", err)
 			}
 		}
 	}
 
-	return nil
+	log.Println("Stopping storeScanResults")
 }
 
-func (s Scanner) scanNewCommits(repo *git.Repository, URL string) error {
-	handledTreeNames, err := s.db.Query(
-		`
-			SELECT DISTINCT tree_name
-			FROM findings
-			WHERE repository = ?
-		`,
-		URL,
-	)
-	if err != nil {
-		log.Printf("scanNewCommits URL: %s\n", URL)
-		return err
-	}
-	defer handledTreeNames.Close()
-
-	ref, err := repo.Head()
-	if err != nil {
-		return err
-	}
-
-	commitsIter, err := repo.Log(&git.LogOptions{From: ref.Hash()})
-	if err != nil {
-		return err
-	}
-
-	return commitsIter.ForEach(func(commit *object.Commit) error {
-		treeName := ""
-		for handledTreeNames.Next() {
-			if err := handledTreeNames.Scan(&treeName); err != nil {
-				log.Printf("scanNewCommits - handleTreeNames.Scan, treeName: %s\n", treeName)
-				return err
-			}
-
-			if treeName == commit.Hash.String() {
-				continue
-			}
-		}
-
-		return s.scanCommit(repo, URL, commit.Hash)
-	})
-}
-
-type scanRepoResult struct {
-	err error
-	url string
-}
-
-func (s Scanner) ScanRepo(
-	URL string,
-	wg *sync.WaitGroup,
-) {
-	dir, err := os.MkdirTemp(s.workingDirectory, s.repoPattern)
-	if err != nil {
-		log.Println("ScanRepo - os.MkdirTemp", URL, err)
-		wg.Done()
-		return
-	}
-	defer os.RemoveAll(dir)
-
-	repo, err := git.PlainClone(dir, false, &git.CloneOptions{
-		URL: URL,
-	})
-	if err != nil {
-		log.Println("ScanRepo - git.PlainClone", URL, err)
-		wg.Done()
-		return
-	}
-
-	if err := s.scanNewCommits(repo, URL); err != nil {
-		log.Println("ScanRepo - s.scanNewCommits", URL, err)
-		wg.Done()
-		return
-	}
-
-	// For some reason the first defer statement to remove the
-	// temp dir is never executed
-	os.RemoveAll(dir)
-	wg.Done()
-}
-
-func (s Scanner) ScanSingleRepo(URL string) error {
-	repo, err := s.GetRepo(URL)
-	if err != nil {
-		return err
-	}
-
-	var wg sync.WaitGroup
-
-	wg.Add(1)
-	go s.ScanRepo(repo.URL, &wg)
-	wg.Wait()
-
-	return nil
-}
-
-func (s Scanner) ScanAll() {
-	repos, err := s.GetRepos()
-	if err != nil {
-		log.Println("ScanAll - s.GetRepos", err)
-	}
-
-	var wg sync.WaitGroup
-
-	for _, repo := range repos {
-		wg.Add(1)
-		go s.ScanRepo(repo.URL, &wg)
-	}
-
-	wg.Wait()
-}
-
-func (s Scanner) scanCommitV2(
+func (s Scanner) scanCommit(
 	repo *git.Repository,
 	repoUrl string,
 	commitHash plumbing.Hash,
 	secretTypes []SecretType,
 	wg *sync.WaitGroup,
 ) error {
-	defer wg.Done()
+	defer func() {
+		wg.Done()
+		log.Printf("Done scanning repo %s, commit %s\n", repoUrl, commitHash)
+	}()
 
 	log.Printf("Scanning repo %s, commit %s\n", repoUrl, commitHash.String())
 
@@ -482,18 +401,27 @@ func (s Scanner) scanCommitV2(
 			return err
 		}
 
+		s.scanResultChan <- scanResult{
+			repoUrl,
+			commitHash.String(),
+			false,
+			Finding{},
+		}
+
 		for _, grepResult := range grepResults {
-			err = s.AddFinding(
+			s.scanResultChan <- scanResult{
 				repoUrl,
-				secretType.Name,
-				grepResult.TreeName,
-				grepResult.FileName,
-				grepResult.LineNumber,
-				grepResult.Content,
-			)
-			if err != nil {
-				log.Printf("Could not add finding to database: %s\n", err)
-				return err
+				commitHash.String(),
+				true,
+				Finding{
+					time.Time{},
+					grepResult.FileName,
+					grepResult.LineNumber,
+					grepResult.Content,
+					grepResult.TreeName,
+					repoUrl,
+					secretType.Name,
+				},
 			}
 		}
 	}
@@ -501,31 +429,34 @@ func (s Scanner) scanCommitV2(
 	return nil
 }
 
-func (s Scanner) ScanRepoV2(repoUrl string, wg *sync.WaitGroup) error {
+func (s Scanner) scanRepo(repoUrl string, wg *sync.WaitGroup) error {
 	defer wg.Done()
 
-	scannedCommitsCursor, err := s.db.Query(
+	rows, err := s.db.Query(
 		`
-			SELECT DISTINCT tree_name
-			FROM findings
+			SELECT DISTINCT commit_hash
+			FROM scanned_commits
 			WHERE repository = ?
 
 		`,
 		repoUrl,
 	)
+
+	defer rows.Close()
+
 	if err != nil {
 		log.Printf(
-			"ScanRepoV2: Could not retrieve scanned commits from database: %s\n",
+			"Could not retrieve scanned commits from database: %s\n",
 			err,
 		)
 		return err
 	}
-	defer scannedCommitsCursor.Close()
 
 	var scannedCommitTreeHashes []string
-	for scannedCommitsCursor.Next() {
+	for rows.Next() {
 		var scannedCommitTreeHash = ""
-		if err := scannedCommitsCursor.Scan(&scannedCommitTreeHash); err != nil {
+		if err := rows.Scan(&scannedCommitTreeHash); err != nil {
+			log.Printf("Could not retrieve values from row: %s\n", err)
 			return err
 		}
 		scannedCommitTreeHashes = append(
@@ -586,7 +517,7 @@ func (s Scanner) ScanRepoV2(repoUrl string, wg *sync.WaitGroup) error {
 
 			if !commitHasBeenScanned {
 				scanCommitWaitGroup.Add(1)
-				go s.scanCommitV2(
+				go s.scanCommit(
 					repo,
 					repoUrl,
 					commit.Hash,
@@ -600,24 +531,46 @@ func (s Scanner) ScanRepoV2(repoUrl string, wg *sync.WaitGroup) error {
 	)
 
 	scanCommitWaitGroup.Wait()
+	log.Println("scanCommitWaitGroup has finished")
 
 	return nil
 }
 
-func (s Scanner) ScanAllV2() error {
+func (s Scanner) ScanSingleRepo(repoUrl string) error {
+	repo, err := s.GetRepo(repoUrl)
+	if err != nil {
+		log.Printf("Could not get repo %s: %s\n", repoUrl, err)
+		return err
+	}
+
+	go s.storeScanResults()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go s.scanRepo(repo.URL, &wg)
+	wg.Wait()
+
+	close(s.scanResultChan)
+
+	return nil
+}
+
+func (s Scanner) ScanAll() error {
 	repos, err := s.GetRepos()
 	if err != nil {
 		return err
 	}
 
-	var wg sync.WaitGroup
+	go s.storeScanResults()
 
+	var wg sync.WaitGroup
 	for _, repo := range repos {
 		wg.Add(1)
-		go s.ScanRepoV2(repo.URL, &wg)
+		go s.scanRepo(repo.URL, &wg)
 	}
-
 	wg.Wait()
+
+	close(s.scanResultChan)
 
 	return nil
 }
