@@ -164,6 +164,7 @@ func (c secretTypeAddCommand) Run(rawArgs []string) int {
 
 	secretTypeName := rawArgs[0]
 	secretTypeRegex := rawArgs[1]
+	log.Printf("Adding secret type \"%s\": \"%s\"", secretTypeName, secretTypeRegex)
 	err = scanner.AddSecretType(secretTypeName, secretTypeRegex)
 	if err != nil {
 		log.Printf("Could not add secret type: %s\n", err)
@@ -247,8 +248,12 @@ func (c scanAllCommand) Run(rawArgs []string) int {
 		return exitNewScannerError
 	}
 
-	// TODO: Add error handling
-	scanner.ScanAll()
+	log.Printf("Scanning all repos\n")
+	err = scanner.ScanAllV2()
+	if err != nil {
+		log.Printf("Could not scan repos: %s\n", err)
+		return exitScanAllError
+	}
 
 	return exitSuccess
 }
@@ -411,6 +416,8 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
+
+	log.Printf("Done.")
 
 	os.Exit(exitStatus)
 }

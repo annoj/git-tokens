@@ -454,3 +454,170 @@ func (s Scanner) ScanAll() {
 
 	wg.Wait()
 }
+
+func (s Scanner) scanCommitV2(
+	repo *git.Repository,
+	repoUrl string,
+	commitHash plumbing.Hash,
+	secretTypes []SecretType,
+	wg *sync.WaitGroup,
+) error {
+	defer wg.Done()
+
+	log.Printf("Scanning repo %s, commit %s\n", repoUrl, commitHash.String())
+
+	for _, secretType := range secretTypes {
+		re, err := regexp.Compile(secretType.Regex)
+		if err != nil {
+			log.Printf("Could not build regex: %s\n", err)
+			return err
+		}
+
+		grepResults, err := repo.Grep(&git.GrepOptions{
+			Patterns:   []*regexp.Regexp{re},
+			CommitHash: commitHash,
+		})
+		if err != nil {
+			log.Printf("Could not grep repo %s: %s\n", repoUrl, err)
+			return err
+		}
+
+		for _, grepResult := range grepResults {
+			err = s.AddFinding(
+				repoUrl,
+				secretType.Name,
+				grepResult.TreeName,
+				grepResult.FileName,
+				grepResult.LineNumber,
+				grepResult.Content,
+			)
+			if err != nil {
+				log.Printf("Could not add finding to database: %s\n", err)
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s Scanner) ScanRepoV2(repoUrl string, wg *sync.WaitGroup) error {
+	defer wg.Done()
+
+	scannedCommitsCursor, err := s.db.Query(
+		`
+			SELECT DISTINCT tree_name
+			FROM findings
+			WHERE repository = ?
+
+		`,
+		repoUrl,
+	)
+	if err != nil {
+		log.Printf(
+			"ScanRepoV2: Could not retrieve scanned commits from database: %s\n",
+			err,
+		)
+		return err
+	}
+	defer scannedCommitsCursor.Close()
+
+	var scannedCommitTreeHashes []string
+	for scannedCommitsCursor.Next() {
+		var scannedCommitTreeHash = ""
+		if err := scannedCommitsCursor.Scan(&scannedCommitTreeHash); err != nil {
+			return err
+		}
+		scannedCommitTreeHashes = append(
+			scannedCommitTreeHashes,
+			scannedCommitTreeHash,
+		)
+	}
+
+	dir, err := os.MkdirTemp(s.workingDirectory, s.repoPattern)
+	if err != nil {
+		log.Printf(
+			"Could not create temporary directory %s: %s\n",
+			repoUrl,
+			err,
+		)
+		return err
+	}
+	defer os.RemoveAll(dir)
+
+	log.Printf("Cloning repo %s into %s\n", repoUrl, dir)
+	repo, err := git.PlainClone(dir, false, &git.CloneOptions{
+		URL: repoUrl,
+	})
+	if err != nil {
+		log.Printf("Could not clone repo %s: %s\n", repoUrl, err)
+		return err
+	}
+	log.Printf("Done cloning repo %s into %s\n", repoUrl, dir)
+
+	ref, err := repo.Head()
+	if err != nil {
+		log.Printf("Could not retrieve HEAD of %s: %s\n", repoUrl, err)
+		return err
+	}
+
+	commits, err := repo.Log(&git.LogOptions{From: ref.Hash()})
+	if err != nil {
+		log.Printf("Could not retrieve commit log of %s: %s\n", repoUrl, err)
+		return err
+	}
+
+	secretTypes, err := s.GetSecretTypes()
+	if err != nil {
+		log.Printf("Could not retrieve secret types: %s\n", err)
+		return err
+	}
+
+	var scanCommitWaitGroup sync.WaitGroup
+	commits.ForEach(
+		func(commit *object.Commit) error {
+			commitHasBeenScanned := false
+			for _, scannedCommitTreeHash := range scannedCommitTreeHashes {
+				if commit.Hash.String() == scannedCommitTreeHash {
+					commitHasBeenScanned = true
+					break
+				}
+			}
+
+			if !commitHasBeenScanned {
+				scanCommitWaitGroup.Add(1)
+				go s.scanCommitV2(
+					repo,
+					repoUrl,
+					commit.Hash,
+					secretTypes,
+					&scanCommitWaitGroup,
+				)
+			}
+
+			return nil
+		},
+	)
+
+	scanCommitWaitGroup.Wait()
+
+	return nil
+}
+
+func (s Scanner) ScanAllV2() error {
+	repos, err := s.GetRepos()
+	if err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+
+	for _, repo := range repos {
+		wg.Add(1)
+		go s.ScanRepoV2(repo.URL, &wg)
+	}
+
+	wg.Wait()
+
+	return nil
+}
