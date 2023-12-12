@@ -15,6 +15,13 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
+type scanJob struct {
+	repoUrl     string
+	repo        *git.Repository
+	commit      object.Commit
+	secretTypes []SecretType
+}
+
 type scanResult struct {
 	repoUrl    string
 	commitHash string
@@ -22,16 +29,29 @@ type scanResult struct {
 	finding    Finding
 }
 
-type Scanner struct {
-	dbType           string
-	dbPath           string
-	db               *sql.DB
-	workingDirectory string
-	repoPattern      string
-	scanResultChan   chan scanResult
+type scannerWorker struct {
+	id      int
+	jobChan chan scanJob
 }
 
-func (s Scanner) createTablesIfNotExist() error {
+type scannerWorkerPool struct {
+	workers []*scannerWorker
+	jobChan chan scanJob
+	wg      sync.WaitGroup
+}
+
+type Scanner struct {
+	dbType                   string
+	dbPath                   string
+	db                       *sql.DB
+	workingDirectory         string
+	repoDirPattern           string
+	concurrentScannerWorkers int
+	scannerWorkerPool        *scannerWorkerPool
+	scanResultChan           chan scanResult
+}
+
+func (s *Scanner) createTablesIfNotExist() error {
 	_, err := s.db.Exec(
 		`
 			CREATE TABLE IF NOT EXISTS repositories (
@@ -89,44 +109,93 @@ func (s Scanner) createTablesIfNotExist() error {
 	return err
 }
 
-func NewScanner(DBType string, DBPath string) (Scanner, error) {
+func newScannerWorker(id int, jobChan chan scanJob) *scannerWorker {
+	return &scannerWorker{
+		id:      id,
+		jobChan: jobChan,
+	}
+}
+
+func (w *scannerWorker) run(scanner *Scanner, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for job := range w.jobChan {
+		log.Printf(
+			"ScannerWorker %d scanning repo %s, commit %s\n",
+			w.id, job.repoUrl, job.commit.Hash.String(),
+		)
+		err := scanner.scanCommit(
+			job.repo,
+			job.repoUrl,
+			job.commit.Hash,
+			job.secretTypes,
+		)
+		if err != nil {
+			log.Printf(
+				"Could not scan repo %s, commit %s: %s\n",
+				job.repoUrl, job.commit.Hash.String(), err,
+			)
+		}
+	}
+}
+
+func newScannerWorkerPool(workerCount int) *scannerWorkerPool {
+	jobChan := make(chan scanJob)
+	pool := &scannerWorkerPool{jobChan: jobChan}
+
+	for i := 0; i < workerCount; i++ {
+		pool.workers = append(pool.workers, newScannerWorker(i, jobChan))
+	}
+
+	return pool
+}
+
+func (p *scannerWorkerPool) start(scanner *Scanner) {
+	for _, worker := range p.workers {
+		p.wg.Add(1)
+		go worker.run(scanner, &p.wg)
+	}
+}
+
+func (p *scannerWorkerPool) wait() {
+	p.wg.Wait()
+}
+
+func NewScanner(
+	DBType string,
+	DBPath string,
+	WorkingDirectory string,
+	RepoDirPattern string,
+	ConcurrentScannerWorkers int,
+) (*Scanner, error) {
 	scanner := Scanner{
-		dbType:           DBType,
-		dbPath:           DBPath,
-		workingDirectory: ".",
-		repoPattern:      "",
-		scanResultChan:   make(chan scanResult),
+		dbType:                   DBType,
+		dbPath:                   DBPath,
+		workingDirectory:         WorkingDirectory,
+		repoDirPattern:           RepoDirPattern,
+		concurrentScannerWorkers: ConcurrentScannerWorkers,
+		scanResultChan:           make(chan scanResult),
 	}
 
 	db, err := sql.Open(DBType, DBPath)
 	if err != nil {
-		return Scanner{}, err
+		return &Scanner{}, err
 	}
 	scanner.db = db
 
 	err = scanner.createTablesIfNotExist()
 	if err != nil {
-		return Scanner{}, err
+		return &Scanner{}, err
 	}
 
-	return scanner, nil
+	scanner.scannerWorkerPool = newScannerWorkerPool(
+		scanner.concurrentScannerWorkers,
+	)
+
+	return &scanner, nil
 }
 
-func (s Scanner) Close() error {
-	err := s.db.Close()
-
-	return err
-}
-
-func (s Scanner) WorkingDirectory(WorkingDirectory string) {
-	s.workingDirectory = WorkingDirectory
-}
-
-func (s Scanner) RepoPattern(RepoPattern string) {
-	s.repoPattern = RepoPattern
-}
-
-func (s Scanner) AddSecretType(Name string, Regex string) error {
+func (s *Scanner) AddSecretType(Name string, Regex string) error {
 	_, err := s.db.Exec(
 		`
 			INSERT OR IGNORE INTO secret_types (name, regex)
@@ -144,7 +213,7 @@ type SecretType struct {
 	Regex string
 }
 
-func (s Scanner) GetSecretTypes() ([]SecretType, error) {
+func (s *Scanner) GetSecretTypes() ([]SecretType, error) {
 	rows, err := s.db.Query(
 		`
 			SELECT name, regex
@@ -171,7 +240,7 @@ func (s Scanner) GetSecretTypes() ([]SecretType, error) {
 	return secretTypes, nil
 }
 
-func (s Scanner) AddRepo(URL string) error {
+func (s *Scanner) AddRepo(URL string) error {
 	_, err := s.db.Exec(
 		`
 			INSERT OR IGNORE INTO repositories(url)
@@ -187,7 +256,7 @@ type Repository struct {
 	URL string
 }
 
-func (s Scanner) GetRepo(URL string) (Repository, error) {
+func (s *Scanner) GetRepo(URL string) (Repository, error) {
 	rows, err := s.db.Query(
 		`
 			SELECT url
@@ -213,7 +282,7 @@ func (s Scanner) GetRepo(URL string) (Repository, error) {
 	return repository, nil
 }
 
-func (s Scanner) GetRepos() ([]Repository, error) {
+func (s *Scanner) GetRepos() ([]Repository, error) {
 	rows, err := s.db.Query(
 		`
 			SELECT url
@@ -240,7 +309,7 @@ func (s Scanner) GetRepos() ([]Repository, error) {
 	return repositories, nil
 }
 
-func (s Scanner) AddScannedCommit(repoUrl string, hash string) error {
+func (s *Scanner) AddScannedCommit(repoUrl string, hash string) error {
 	_, err := s.db.Exec(
 		`
 			INSERT OR IGNORE INTO scanned_commits (
@@ -266,7 +335,7 @@ type Finding struct {
 	SecretType           string
 }
 
-func (s Scanner) AddFinding(
+func (s *Scanner) AddFinding(
 	URL string,
 	SecretTypeName string,
 	TreeName string,
@@ -299,7 +368,7 @@ func (s Scanner) AddFinding(
 	return err
 }
 
-func (s Scanner) GetFindings() ([]Finding, error) {
+func (s *Scanner) GetFindings() ([]Finding, error) {
 	rows, err := s.db.Query(
 		`
 			SELECT
@@ -341,7 +410,7 @@ func (s Scanner) GetFindings() ([]Finding, error) {
 	return findings, nil
 }
 
-func (s Scanner) storeScanResults() {
+func (s *Scanner) storeScanResults() {
 	log.Println("Starting storeScanResults")
 
 	for result := range s.scanResultChan {
@@ -371,17 +440,13 @@ func (s Scanner) storeScanResults() {
 	log.Println("Stopping storeScanResults")
 }
 
-func (s Scanner) scanCommit(
+func (s *Scanner) scanCommit(
 	repo *git.Repository,
 	repoUrl string,
 	commitHash plumbing.Hash,
 	secretTypes []SecretType,
-	wg *sync.WaitGroup,
 ) error {
-	defer func() {
-		wg.Done()
-		log.Printf("Done scanning repo %s, commit %s\n", repoUrl, commitHash)
-	}()
+	defer log.Printf("Done scanning repo %s, commit %s\n", repoUrl, commitHash)
 
 	log.Printf("Scanning repo %s, commit %s\n", repoUrl, commitHash.String())
 
@@ -429,7 +494,7 @@ func (s Scanner) scanCommit(
 	return nil
 }
 
-func (s Scanner) scanRepo(repoUrl string, wg *sync.WaitGroup) error {
+func (s *Scanner) scanRepo(repoUrl string, wg *sync.WaitGroup) error {
 	defer wg.Done()
 
 	rows, err := s.db.Query(
@@ -465,7 +530,7 @@ func (s Scanner) scanRepo(repoUrl string, wg *sync.WaitGroup) error {
 		)
 	}
 
-	dir, err := os.MkdirTemp(s.workingDirectory, s.repoPattern)
+	dir, err := os.MkdirTemp(s.workingDirectory, s.repoDirPattern)
 	if err != nil {
 		log.Printf(
 			"Could not create temporary directory %s: %s\n",
@@ -504,7 +569,6 @@ func (s Scanner) scanRepo(repoUrl string, wg *sync.WaitGroup) error {
 		return err
 	}
 
-	var scanCommitWaitGroup sync.WaitGroup
 	commits.ForEach(
 		func(commit *object.Commit) error {
 			commitHasBeenScanned := false
@@ -516,33 +580,29 @@ func (s Scanner) scanRepo(repoUrl string, wg *sync.WaitGroup) error {
 			}
 
 			if !commitHasBeenScanned {
-				scanCommitWaitGroup.Add(1)
-				go s.scanCommit(
-					repo,
+				s.scannerWorkerPool.jobChan <- scanJob{
 					repoUrl,
-					commit.Hash,
+					repo,
+					*commit,
 					secretTypes,
-					&scanCommitWaitGroup,
-				)
+				}
 			}
 
 			return nil
 		},
 	)
 
-	scanCommitWaitGroup.Wait()
-	log.Println("scanCommitWaitGroup has finished")
-
 	return nil
 }
 
-func (s Scanner) ScanSingleRepo(repoUrl string) error {
+func (s *Scanner) ScanSingleRepo(repoUrl string) error {
 	repo, err := s.GetRepo(repoUrl)
 	if err != nil {
 		log.Printf("Could not get repo %s: %s\n", repoUrl, err)
 		return err
 	}
 
+	s.scannerWorkerPool.start(s)
 	go s.storeScanResults()
 
 	var wg sync.WaitGroup
@@ -552,15 +612,18 @@ func (s Scanner) ScanSingleRepo(repoUrl string) error {
 
 	close(s.scanResultChan)
 
+	s.scannerWorkerPool.wait()
+
 	return nil
 }
 
-func (s Scanner) ScanAll() error {
+func (s *Scanner) ScanAll() error {
 	repos, err := s.GetRepos()
 	if err != nil {
 		return err
 	}
 
+	s.scannerWorkerPool.start(s)
 	go s.storeScanResults()
 
 	var wg sync.WaitGroup
@@ -571,6 +634,8 @@ func (s Scanner) ScanAll() error {
 	wg.Wait()
 
 	close(s.scanResultChan)
+
+	s.scannerWorkerPool.wait()
 
 	return nil
 }
