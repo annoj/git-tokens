@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	scannerDBType     = "sqlite3"
-	scannerDBFilename = "git-tokens.sqlite3"
+	scannerDBType            = "sqlite3"
+	scannerDBFilename        = "git-tokens.sqlite3"
+	scannerWorkingDirectory  = "."
+	scannerRepoDirPattern    = ""
+	concurrentScannerWorkers = 100
 )
 
 const (
@@ -28,6 +31,16 @@ const (
 	exitScanRepoError
 	exitFindingListError
 )
+
+func newScanner() (*scanner.Scanner, error) {
+	return scanner.NewScanner(
+		scannerDBType,
+		scannerDBFilename,
+		scannerWorkingDirectory,
+		scannerRepoDirPattern,
+		concurrentScannerWorkers,
+	)
+}
 
 func confirmRawArgsLenOrLogError(
 	args []string,
@@ -71,7 +84,7 @@ func (c repoAddCommand) Run(rawArgs []string) int {
 		return exitRepoAddError
 	}
 
-	scanner, err := scanner.NewScanner(scannerDBType, scannerDBFilename)
+	scanner, err := newScanner()
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
 		return exitNewScannerError
@@ -103,7 +116,7 @@ func (c repoListCommand) Run(rawArgs []string) int {
 		return exitRepoListError
 	}
 
-	scanner, err := scanner.NewScanner(scannerDBType, scannerDBFilename)
+	scanner, err := newScanner()
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
 		return exitNewScannerError
@@ -156,7 +169,7 @@ func (c secretTypeAddCommand) Run(rawArgs []string) int {
 		return exitSecretTypeAddError
 	}
 
-	scanner, err := scanner.NewScanner(scannerDBType, scannerDBFilename)
+	scanner, err := newScanner()
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
 		return exitNewScannerError
@@ -189,7 +202,7 @@ func (c secretTypeListCommand) Run(rawArgs []string) int {
 		return exitSecretTypeListError
 	}
 
-	scanner, err := scanner.NewScanner(scannerDBType, scannerDBFilename)
+	scanner, err := newScanner()
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
 		return exitNewScannerError
@@ -242,7 +255,7 @@ func (c scanAllCommand) Run(rawArgs []string) int {
 		return exitScanAllError
 	}
 
-	scanner, err := scanner.NewScanner(scannerDBType, scannerDBFilename)
+	scanner, err := newScanner()
 	if err != nil {
 		log.Printf("Could not create new scanner: %s\n", err)
 		return exitNewScannerError
@@ -273,7 +286,7 @@ func (c scanRepoCommand) Run(rawArgs []string) int {
 		return exitScanRepoError
 	}
 
-	scanner, err := scanner.NewScanner("sqlite3", "git-tokens.slite3")
+	scanner, err := newScanner()
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
 		return exitNewScannerError
@@ -323,7 +336,7 @@ func (c findingListCommand) Run(rawArgs []string) int {
 		return exitFindingListError
 	}
 
-	scanner, err := scanner.NewScanner(scannerDBType, scannerDBFilename)
+	scanner, err := newScanner()
 	if err != nil {
 		log.Printf("Could not create new scanner, %s\n", err)
 		return exitNewScannerError
